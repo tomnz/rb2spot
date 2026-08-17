@@ -209,7 +209,18 @@ function createPlainReporter(stream: Stream): ProgressReporter {
   };
 }
 
-export function createReporter(stream: Stream & { isTTY?: boolean } = process.stdout): ProgressReporter {
-  const interactive = stream.isTTY === true && !process.env.CI;
+export type ReporterOptions = {
+  /**
+   * Force the renderer instead of detecting it. Detection consults `CI`, which
+   * a caller asking for a specific renderer should not be subject to.
+   */
+  interactive?: boolean;
+};
+
+export function createReporter(
+  stream: Stream & { isTTY?: boolean } = process.stdout,
+  options: ReporterOptions = {},
+): ProgressReporter {
+  const interactive = options.interactive ?? (stream.isTTY === true && !process.env.CI);
   return interactive ? createTtyReporter(stream) : createPlainReporter(stream);
 }

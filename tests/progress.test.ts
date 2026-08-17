@@ -2,6 +2,8 @@ import { describe, expect, setSystemTime, test } from "bun:test";
 import { createReporter, formatDuration, silentReporter } from "../src/progress.ts";
 
 /** Collects writes so the rendered frames can be asserted on. */
+// `interactive` is passed explicitly everywhere below: detection consults the
+// CI env var, which would otherwise silently pick the plain renderer on CI.
 function fakeStream(opts: { isTTY: boolean; columns?: number }) {
   const chunks: string[] = [];
   return {
@@ -48,7 +50,7 @@ describe("silentReporter", () => {
 describe("createReporter — interactive", () => {
   test("redraws one line and leaves a single OK line at the end", () => {
     const stream = fakeStream({ isTTY: true });
-    const reporter = createReporter(stream);
+    const reporter = createReporter(stream, { interactive: stream.isTTY });
 
     const bar = reporter.start("Matching tracks", 2);
     bar.tick("Artist - One");
@@ -64,14 +66,14 @@ describe("createReporter — interactive", () => {
 
   test("a completed tick always draws, even inside the frame throttle", () => {
     const stream = fakeStream({ isTTY: true });
-    const bar = createReporter(stream).start("Reading", 50);
+    const bar = createReporter(stream, { interactive: stream.isTTY }).start("Reading", 50);
     for (let i = 0; i < 50; i++) bar.tick();
     expect(stream.text).toContain("50/50 100%");
   });
 
   test("truncates the note so the line fits the terminal width", () => {
     const stream = fakeStream({ isTTY: true, columns: 60 });
-    const bar = createReporter(stream).start("Matching", 1);
+    const bar = createReporter(stream, { interactive: stream.isTTY }).start("Matching", 1);
     bar.tick("x".repeat(200));
 
     for (const frame of stream.frames) {
@@ -82,7 +84,7 @@ describe("createReporter — interactive", () => {
 
   test("ok() replaces the pending step line rather than stacking up", () => {
     const stream = fakeStream({ isTTY: true });
-    const reporter = createReporter(stream);
+    const reporter = createReporter(stream, { interactive: stream.isTTY });
     reporter.step("Authorizing…");
     reporter.ok("Authorized as djtom");
 
@@ -93,7 +95,7 @@ describe("createReporter — interactive", () => {
 
   test("warn() surfaces on the line and clears on the next advance", () => {
     const stream = fakeStream({ isTTY: true });
-    const bar = createReporter(stream).start("Matching", 10);
+    const bar = createReporter(stream, { interactive: stream.isTTY }).start("Matching", 10);
 
     bar.note("Nova Kestrel - Paper Tigers");
     bar.warn("rate limited by Spotify — waiting 30s");
@@ -110,7 +112,7 @@ describe("createReporter — interactive", () => {
     const start = 1_700_000_000_000;
     setSystemTime(new Date(start));
     try {
-      const bar = createReporter(stream).start("Matching", 100);
+      const bar = createReporter(stream, { interactive: stream.isTTY }).start("Matching", 100);
       bar.tick();
       bar.tick();
       bar.tick();
@@ -130,7 +132,7 @@ describe("createReporter — interactive", () => {
 
   test("handles a zero-total phase without dividing by zero", () => {
     const stream = fakeStream({ isTTY: true });
-    const bar = createReporter(stream).start("Unfollowing", 0);
+    const bar = createReporter(stream, { interactive: stream.isTTY }).start("Unfollowing", 0);
     bar.stop("nothing to do");
     expect(stream.text).toContain("0/0 100%");
     expect(stream.text).toContain("OK Unfollowing — nothing to do");
@@ -140,7 +142,7 @@ describe("createReporter — interactive", () => {
 describe("createReporter — non-interactive", () => {
   test("emits plain lines with no cursor control codes", () => {
     const stream = fakeStream({ isTTY: false });
-    const reporter = createReporter(stream);
+    const reporter = createReporter(stream, { interactive: stream.isTTY });
 
     reporter.step("Reading rekordbox XML…");
     reporter.ok("Read 5 tracks");
@@ -156,7 +158,7 @@ describe("createReporter — non-interactive", () => {
 
   test("logs warnings but drops per-item notes", () => {
     const stream = fakeStream({ isTTY: false });
-    const bar = createReporter(stream).start("Matching", 10);
+    const bar = createReporter(stream, { interactive: stream.isTTY }).start("Matching", 10);
     bar.note("Nova Kestrel - Paper Tigers");
     bar.warn("rate limited by Spotify — waiting 30s");
     bar.stop();
@@ -167,7 +169,7 @@ describe("createReporter — non-interactive", () => {
 
   test("keeps interim output bounded to roughly one line per decile", () => {
     const stream = fakeStream({ isTTY: false });
-    const bar = createReporter(stream).start("Matching", 500);
+    const bar = createReporter(stream, { interactive: stream.isTTY }).start("Matching", 500);
     for (let i = 0; i < 500; i++) bar.tick();
     bar.stop();
     expect(stream.text.trim().split("\n").length).toBeLessThanOrEqual(12);
