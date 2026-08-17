@@ -1,22 +1,83 @@
+# rb2spot configuration.
+#
+# Every setting below is commented out and shows its built-in default, so this
+# file documents the behaviour without changing it. Uncomment only what you want
+# to differ. Delete this file entirely and the defaults still apply.
+
 rekordbox:
-  source: xml
+  # Path to the XML exported from rekordbox. This is the one setting most people
+  # need. Falls back to ~/Documents/rekordbox.xml when omitted.
   xml_path: ~/Documents/rekordbox.xml
-  db_path: ~/Library/Pioneer/rekordbox/master.db
-  # Exact-match playlist names to exclude from sync.
-  ignore_playlists:
-    - "Trial playlist - Cloud Library Sync"
-    - "CUE解析用プレイリスト"
+
+  # Playlist patterns, matched against the rekordbox folder path
+  # ("Folder/Subfolder/Playlist"). Matching is case-insensitive.
+  #   Vibe               whole folder, at any depth
+  #   Sets/House 2024    one specific playlist
+  #   House/*            playlists directly under House
+  #   Archive Sets/**    everything under Archive Sets, any depth
+  #   *Bass*             any playlist whose name contains "Bass"
+  # Run `rb2spot list-playlists` to see the paths to match against.
+
+  # If set, ONLY playlists matching these are synced. Default: sync everything.
+  # include_playlists:
+  #   - "Vibe"
+  #   - "Sets/**"
+
+  # Playlists to skip. Applied after include_playlists and wins over it.
+  # Default: none. These two are rekordbox's own scratch playlists, which most
+  # people want excluded:
+  # ignore_playlists:
+  #   - "Trial playlist - Cloud Library Sync"
+  #   - "CUE Analysis Playlist*"
 
 spotify:
-  playlist_prefix: "[RB] "
-  folder_separator: "/"
-  visibility: private
+  # Prefix on every playlist this tool manages. It is also how the tool
+  # recognizes its own playlists, so changing it makes the previous ones look
+  # like strays and unfollows them on the next sync. Change it deliberately.
+  # playlist_prefix: "[RB] "
+
+  # Joins rekordbox folder levels: "Genre/Techno" -> "[RB] Genre/Techno".
+  # folder_separator: "/"
+
+  # private | public. Applies to playlists this tool creates.
+  # visibility: private
+
+  # rekordbox is the source of truth, so a playlist carrying the prefix that is
+  # no longer selected is treated as deleted and unfollowed. Set false when you
+  # deliberately sync a subset (--include), so the playlists you did not sync
+  # this run are left alone instead of being removed. --unfollow / --no-unfollow
+  # override this for a single run.
+  # unfollow_removed: true
+
+  # Steady request rate. Spotify throttles per app on a rolling window and does
+  # not publish the limit, so this stays deliberately conservative. Lower it if
+  # you still see "rate limited" during a sync.
+  # requests_per_second: 1
 
 matching:
-  fuzzy_threshold: 0.85
-  duration_tolerance_ms: 3000
-  prefer_original_mix: true
+  # 0.0-1.0. Lower is more permissive and raises the false-match risk.
+  # fuzzy_threshold: 0.85
+
+  # How far a candidate's length may differ when breaking a tie between
+  # equally-scored candidates.
+  # duration_tolerance_ms: 3000
+
+  # Prefer a candidate titled "Original Mix" when scores are tied.
+  # prefer_original_mix: true
 
 output:
-  log_dir: ./logs
-  cache_dir: ./.cache
+  # Where sync summaries and the unmatched-track CSV are written.
+  # log_dir: ./logs
+
+  # Where the Spotify token and both caches live.
+  # cache_dir: ./.cache
+
+  # Spotify search results are cached so repeat syncs cost no request quota.
+  # Found tracks: "never" expires them, since a Spotify URI is a permanent id
+  # and what is cached is the candidate list, not the match decision. Set a
+  # number of days instead if you want them revisited periodically.
+  # search_cache_hit_days: never
+
+  # Empty results DO expire, so a track added to Spotify later gets found.
+  # Shorter means fresher, but re-checking every unmatched track costs quota.
+  # search_cache_miss_days: 30

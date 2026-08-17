@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach } from "bun:test";
-import { existsSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, rmSync, statSync } from "node:fs";
 import {
   getValidAccessToken,
   saveToken,
@@ -36,6 +36,16 @@ describe("saveToken and loadToken", () => {
     expect(loadToken(TEST_TOKEN_PATH)).toEqual(token);
   });
 
+  test("writes the token readable only by its owner", () => {
+    const token = { access_token: "AT", refresh_token: "RT", scope: "s", expires_at: 1 };
+    // Pre-create it world-readable: a refresh must tighten an existing file too.
+    saveToken(token, TEST_TOKEN_PATH);
+    chmodSync(TEST_TOKEN_PATH, 0o644);
+    saveToken(token, TEST_TOKEN_PATH);
+
+    expect(statSync(TEST_TOKEN_PATH).mode & 0o777).toBe(0o600);
+  });
+
   test("loadToken returns null when file missing", () => {
     expect(loadToken("/tmp/__nonexistent-token.json")).toBeNull();
   });
@@ -66,7 +76,7 @@ describe("getValidAccessToken", () => {
 
   test("throws when no token file (must run init)", async () => {
     expect(getValidAccessToken({ tokenPath: TEST_TOKEN_PATH, clientId: "CID", clientSecret: "SEC" }))
-      .rejects.toThrow(/rb-spot init/);
+      .rejects.toThrow(/rb2spot init/);
   });
 
   test("refreshes and returns new token when expired", async () => {
@@ -108,7 +118,7 @@ describe("getValidAccessToken", () => {
     saveToken({ access_token: "OLD", refresh_token: "INVALID", scope: "s", expires_at: Date.now() - 1000 }, TEST_TOKEN_PATH);
 
     const original = globalThis.fetch;
-    globalThis.fetch = (async () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400, headers: { "content-type": "application/json" } })) as typeof fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
 
     await expect(
       getValidAccessToken({ tokenPath: TEST_TOKEN_PATH, clientId: "CID", clientSecret: "SEC" }),

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { SpotifyToken } from "../types.ts";
 
@@ -16,8 +16,15 @@ export function isTokenExpired(token: SpotifyToken): boolean {
 }
 
 export function saveToken(token: SpotifyToken, path: string = TOKEN_PATH_DEFAULT): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(token, null, 2), "utf-8");
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  writeFileSync(path, JSON.stringify(token, null, 2), { encoding: "utf-8", mode: 0o600 });
+  // `mode` above only applies when creating the file, so tighten it explicitly:
+  // a token written before this existed would otherwise stay world-readable.
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    // Filesystems without POSIX permissions (Windows, some mounts) — nothing to do.
+  }
 }
 
 export function loadToken(path: string = TOKEN_PATH_DEFAULT): SpotifyToken | null {
@@ -107,7 +114,7 @@ export async function getValidAccessToken(config: AuthConfig): Promise<string> {
   const path = config.tokenPath ?? TOKEN_PATH_DEFAULT;
   const token = loadToken(path);
   if (!token) {
-    throw new Error("Spotify トークン未取得です。`rb-spot init` を実行してください。");
+    throw new Error("Spotify token missing. Run `rb2spot init` first.");
   }
   if (!isTokenExpired(token)) {
     return token.access_token;

@@ -6,46 +6,135 @@ import { Command } from "commander";
 import chalk from "chalk";
 import { parse as parseYaml } from "yaml";
 import { runVerify } from "./verify.ts";
-import type { VerifyReport } from "./types.ts";
+import type { VerifyReport, Playlist, SyncSummary } from "./types.ts";
 import { runSync } from "./sync.ts";
+import { createReporter, silentReporter } from "./progress.ts";
+import { DEFAULT_REQUESTS_PER_SECOND, SpotifyApiError, SpotifyRateLimitError } from "./spotify/client.ts";
+import { DEFAULT_NAMING } from "./spotify/playlist.ts";
+import { DEFAULT_HIT_TTL_MS, DEFAULT_MISS_TTL_MS } from "./matcher/search-cache.ts";
 import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import { buildAuthorizationUrl, exchangeCodeForToken, saveToken } from "./spotify/auth.ts";
 import { readUnmatchedCsv } from "./unmatched.ts";
+import { createXmlParser, extractPlaylists } from "./readers/xml.ts";
+import {
+  isPlaylistSelected,
+  playlistFullPath,
+  unmatchedPatterns,
+  type PlaylistSelection,
+} from "./playlist-filter.ts";
 
 const ENV_TEMPLATE = `SPOTIFY_CLIENT_ID=
 SPOTIFY_CLIENT_SECRET=
 SPOTIFY_REDIRECT_URI=http://127.0.0.1:8888/callback
 `;
 
-const CONFIG_TEMPLATE = `rekordbox:
-  source: xml
+const CONFIG_TEMPLATE = `# rb2spot configuration.
+#
+# Every setting below is commented out and shows its built-in default, so this
+# file documents the behaviour without changing it. Uncomment only what you want
+# to differ. Delete this file entirely and the defaults still apply.
+
+rekordbox:
+  # Path to the XML exported from rekordbox. This is the one setting most people
+  # need. Falls back to ~/Documents/rekordbox.xml when omitted.
   xml_path: ~/Documents/rekordbox.xml
-  # Exact-match playlist names to exclude from sync
-  ignore_playlists:
-    - "Trial playlist - Cloud Library Sync"
-    - "CUE解析用プレイリスト"
+
+  # Playlist patterns, matched against the rekordbox folder path
+  # ("Folder/Subfolder/Playlist"). Matching is case-insensitive.
+  #   Vibe               whole folder, at any depth
+  #   Sets/House 2024    one specific playlist
+  #   House/*            playlists directly under House
+  #   Archive Sets/**    everything under Archive Sets, any depth
+  #   *Bass*             any playlist whose name contains "Bass"
+  # Run \`rb2spot list-playlists\` to see the paths to match against.
+
+  # If set, ONLY playlists matching these are synced. Default: sync everything.
+  # include_playlists:
+  #   - "Vibe"
+  #   - "Sets/**"
+
+  # Playlists to skip. Applied after include_playlists and wins over it.
+  # Default: none. These two are rekordbox's own scratch playlists, which most
+  # people want excluded:
+  # ignore_playlists:
+  #   - "Trial playlist - Cloud Library Sync"
+  #   - "CUE Analysis Playlist*"
 
 spotify:
-  playlist_prefix: "[RB] "
-  folder_separator: "/"
-  visibility: private
+  # Prefix on every playlist this tool manages. It is also how the tool
+  # recognizes its own playlists, so changing it makes the previous ones look
+  # like strays and unfollows them on the next sync. Change it deliberately.
+  # playlist_prefix: "[RB] "
+
+  # Joins rekordbox folder levels: "Genre/Techno" -> "[RB] Genre/Techno".
+  # folder_separator: "/"
+
+  # private | public. Applies to playlists this tool creates.
+  # visibility: private
+
+  # rekordbox is the source of truth, so a playlist carrying the prefix that is
+  # no longer selected is treated as deleted and unfollowed. Set false when you
+  # deliberately sync a subset (--include), so the playlists you did not sync
+  # this run are left alone instead of being removed. --unfollow / --no-unfollow
+  # override this for a single run.
+  # unfollow_removed: true
+
+  # Steady request rate. Spotify throttles per app on a rolling window and does
+  # not publish the limit, so this stays deliberately conservative. Lower it if
+  # you still see "rate limited" during a sync.
+  # requests_per_second: 1
 
 matching:
-  fuzzy_threshold: 0.75
-  duration_tolerance_ms: 3000
-  prefer_original_mix: true
+  # 0.0-1.0. Lower is more permissive and raises the false-match risk.
+  # fuzzy_threshold: 0.85
+
+  # How far a candidate's length may differ when breaking a tie between
+  # equally-scored candidates.
+  # duration_tolerance_ms: 3000
+
+  # Prefer a candidate titled "Original Mix" when scores are tied.
+  # prefer_original_mix: true
 
 output:
-  log_dir: ./logs
-  cache_dir: ./.cache
+  # Where sync summaries and the unmatched-track CSV are written.
+  # log_dir: ./logs
+
+  # Where the Spotify token and both caches live.
+  # cache_dir: ./.cache
+
+  # Spotify search results are cached so repeat syncs cost no request quota.
+  # Found tracks: "never" expires them, since a Spotify URI is a permanent id
+  # and what is cached is the candidate list, not the match decision. Set a
+  # number of days instead if you want them revisited periodically.
+  # search_cache_hit_days: never
+
+  # Empty results DO expire, so a track added to Spotify later gets found.
+  # Shorter means fresher, but re-checking every unmatched track costs quota.
+  # search_cache_miss_days: 30
 `;
 
 type ConfigYaml = {
-  rekordbox?: { xml_path?: string; db_path?: string; ignore_playlists?: string[] };
-  spotify?: { playlist_prefix?: string; folder_separator?: string; visibility?: "private" | "public" };
+  rekordbox?: {
+    xml_path?: string;
+    db_path?: string;
+    ignore_playlists?: string[];
+    include_playlists?: string[];
+  };
+  spotify?: {
+    playlist_prefix?: string;
+    folder_separator?: string;
+    visibility?: "private" | "public";
+    requests_per_second?: number;
+    unfollow_removed?: boolean;
+  };
   matching?: { fuzzy_threshold?: number; duration_tolerance_ms?: number; prefer_original_mix?: boolean };
-  output?: { log_dir?: string; cache_dir?: string };
+  output?: {
+    log_dir?: string;
+    cache_dir?: string;
+    search_cache_hit_days?: number | "never";
+    search_cache_miss_days?: number;
+  };
 };
 
 function expandHome(p: string): string {
@@ -80,36 +169,92 @@ function resolveDbPath(argPath: string | undefined, cfg: ConfigYaml): string | u
   return existsSync(fallback) ? fallback : undefined;
 }
 
+/** Accumulator for repeatable options like `--include A --include B`. */
+function collect(value: string, previous: string[]): string[] {
+  return previous.concat([value]);
+}
+
+const PATTERN_HELP =
+  'Glob or folder path, e.g. "Vibe", "Sets/**", "House/*" (repeatable)';
+
+/** CLI patterns replace the config list entirely when supplied. */
+function resolveSelection(
+  rawOpts: { include?: string[]; exclude?: string[] },
+  cfg: ConfigYaml,
+): PlaylistSelection {
+  const include = rawOpts.include?.length ? rawOpts.include : cfg.rekordbox?.include_playlists ?? [];
+  const exclude = rawOpts.exclude?.length ? rawOpts.exclude : cfg.rekordbox?.ignore_playlists ?? [];
+  return { include, exclude };
+}
+
+const DAY_MS = 86_400_000;
+
+/** Cache lifetimes in days; "never" (the default for hits) means no expiry. */
+function resolveSearchCacheTtl(cfg: ConfigYaml): { hitTtlMs: number; missTtlMs: number } {
+  const hit = cfg.output?.search_cache_hit_days;
+  const miss = cfg.output?.search_cache_miss_days;
+  return {
+    hitTtlMs:
+      hit === undefined || hit === "never" ? DEFAULT_HIT_TTL_MS : Math.max(0, Number(hit)) * DAY_MS,
+    missTtlMs: miss === undefined ? DEFAULT_MISS_TTL_MS : Math.max(0, Number(miss)) * DAY_MS,
+  };
+}
+
+/** Read every playlist in the XML, ignoring any selection. */
+function readAllPlaylists(xmlPath: string): Playlist[] {
+  const parsed = createXmlParser().parse(readFileSync(xmlPath, "utf-8"));
+  return extractPlaylists(parsed);
+}
+
+/** Warn about patterns that match nothing, so a typo doesn't silently sync nothing. */
+function warnUnmatchedPatterns(selection: PlaylistSelection, all: Playlist[]): void {
+  for (const [label, patterns] of [
+    ["include", selection.include ?? []],
+    ["ignore", selection.exclude ?? []],
+  ] as const) {
+    for (const p of unmatchedPatterns(patterns, all)) {
+      console.warn(chalk.yellow("WARN"), `${label} pattern "${p}" matched no playlist`);
+    }
+  }
+}
+
 const program = new Command();
-program.name("rekordbox2spotify").description("rekordbox to Spotify sync tool").version("0.0.1");
+program.name("rb2spot").description("rekordbox to Spotify sync tool").version("0.0.1");
 
 program
   .command("verify")
-  .description("Diagnose rekordbox XML / DB for M1 planning")
+  .description("Diagnose a rekordbox XML / DB before syncing")
   .option("--xml <path>", "Path to rekordbox XML")
   .option("--db <path>", "Path to rekordbox master.db")
   .option("--skip-xml", "Skip XML verification", false)
   .option("--skip-db", "Skip DB probe", false)
-  .option("--out-dir <dir>", "Output directory for reports", "./logs")
+  .option("--out-dir <dir>", "Output directory for reports (default: output.log_dir, else ./logs)")
   .option("--json-only", "Suppress console digest", false)
+  .option("--include <pattern>", `Only include matching playlists. ${PATTERN_HELP}`, collect, [])
+  .option("--exclude <pattern>", `Skip matching playlists. ${PATTERN_HELP}`, collect, [])
   .action(async (rawOpts) => {
     const cfg = loadConfig();
     const xmlPath = rawOpts.skipXml ? undefined : resolveXmlPath(rawOpts.xml, cfg);
     const dbPath = rawOpts.skipDb ? undefined : resolveDbPath(rawOpts.db, cfg);
-    const ignorePlaylists = cfg.rekordbox?.ignore_playlists ?? [];
+    const selection = resolveSelection(rawOpts, cfg);
 
     if (!xmlPath && !dbPath) {
-      console.error(chalk.red("XML / DB どちらのパスも解決できませんでした。"));
-      console.error("  --xml で明示するか、rekordbox から XML をエクスポートしてください。");
+      console.error(chalk.red("Could not resolve an XML or DB path."));
+      console.error("  Pass --xml explicitly, or export an XML from rekordbox.");
       process.exit(1);
     }
 
     try {
+      if (xmlPath && existsSync(xmlPath)) {
+        warnUnmatchedPatterns(selection, readAllPlaylists(xmlPath));
+      }
+
       const { report, outputPaths } = await runVerify({
         xmlPath, dbPath,
         skipXml: rawOpts.skipXml, skipDb: rawOpts.skipDb,
-        outDir: rawOpts.outDir,
-        ignorePlaylists,  // NEW
+        outDir: rawOpts.outDir ?? cfg.output?.log_dir ?? "./logs",
+        ignorePlaylists: selection.exclude,
+        includePlaylists: selection.include,
       });
 
       if (!rawOpts.jsonOnly) {
@@ -119,10 +264,44 @@ program
       }
       process.exit(0);
     } catch (e) {
-      console.error(chalk.red("verify が完遂しませんでした:"), e instanceof Error ? e.message : e);
+      console.error(chalk.red("verify did not complete:"), e instanceof Error ? e.message : e);
       process.exit(1);
     }
   });
+
+/** Dry-run detail: what each playlist would gain and lose. */
+function printPlan(summary: SyncSummary, perPlaylistLimit: number): void {
+  const changed = summary.changes.filter((c) => c.action !== "noop");
+  if (changed.length === 0) {
+    console.log("");
+    console.log(chalk.bold("Plan:"), "everything already matches rekordbox — nothing to do.");
+    return;
+  }
+
+  console.log("");
+  console.log(chalk.bold("Plan:"));
+  for (const c of changed) {
+    const label =
+      c.action === "create" ? chalk.green("create  ")
+      : c.action === "update" ? chalk.cyan("update  ")
+      : c.action === "orphan" ? chalk.dim("keep    ")
+      : chalk.yellow("unfollow");
+    const delta =
+      c.action === "unfollow" || c.action === "orphan"
+        ? chalk.dim(c.action === "orphan" ? "  (not selected, left alone)" : "")
+        : chalk.dim(`  (+${c.added.length} / -${c.removed.length})`);
+    console.log(`  ${label} ${c.name}${delta}`);
+
+    const lines = [
+      ...c.added.map((t) => `${chalk.green("+")} ${t}`),
+      ...c.removed.map((t) => `${chalk.red("-")} ${t}`),
+    ];
+    for (const line of lines.slice(0, perPlaylistLimit)) console.log(`      ${line}`);
+    if (lines.length > perPlaylistLimit) {
+      console.log(chalk.dim(`      … ${lines.length - perPlaylistLimit} more (use --full to see all)`));
+    }
+  }
+}
 
 function printDigest(report: VerifyReport, outputPaths: { md: string; json: string }): void {
   const xml = report.xml;
@@ -131,7 +310,7 @@ function printDigest(report: VerifyReport, outputPaths: { md: string; json: stri
     if (xml.status === "ok") {
       console.log(
         chalk.green("OK"),
-        `XML パース完了 (${xml.trackCount} tracks, ${xml.playlistCount.total} playlists)`
+        `Parsed XML (${xml.trackCount} tracks, ${xml.playlistCount.total} playlists)`
       );
     } else {
       console.log(chalk.yellow("WARN"), `XML: ${xml.status}`);
@@ -139,31 +318,78 @@ function printDigest(report: VerifyReport, outputPaths: { md: string; json: stri
   }
   if (db) {
     if (db.status === "ok") {
-      console.log(chalk.green("OK"), `DB 読み取り成功 (${db.tableNames?.length ?? 0} tables)`);
+      console.log(chalk.green("OK"), `Read DB (${db.tableNames?.length ?? 0} tables)`);
     } else if (db.status === "encrypted") {
-      console.log(chalk.yellow("WARN"), "DB は SQLCipher で暗号化されています");
+      console.log(chalk.yellow("WARN"), "DB is SQLCipher-encrypted");
     } else {
       console.log(chalk.yellow("WARN"), `DB: ${db.status}`);
     }
   }
-  console.log(chalk.green("OK"), `レポート出力: ${outputPaths.md}`);
+  console.log(chalk.green("OK"), `Report written: ${outputPaths.md}`);
   console.log(chalk.green("OK"), `                ${outputPaths.json}`);
   console.log("");
-  console.log(chalk.bold("結論:"));
+  console.log(chalk.bold("Conclusion:"));
   console.log(report.conclusion);
 }
 
 program
+  .command("list-playlists")
+  .description("List rekordbox playlists by folder path, and show which ones the filters select")
+  .option("--xml <path>", "Path to rekordbox XML")
+  .option("--include <pattern>", `Only include matching playlists. ${PATTERN_HELP}`, collect, [])
+  .option("--exclude <pattern>", `Skip matching playlists. ${PATTERN_HELP}`, collect, [])
+  .option("--selected-only", "Print only the playlists that would be synced", false)
+  .action((rawOpts) => {
+    const cfg = loadConfig();
+    const xmlPath = resolveXmlPath(rawOpts.xml, cfg);
+    if (!xmlPath || !existsSync(xmlPath)) {
+      console.error(chalk.red("Could not resolve an XML path. Pass --xml or set it in config.yaml"));
+      process.exit(1);
+    }
+
+    const selection = resolveSelection(rawOpts, cfg);
+    const filtering = (selection.include?.length ?? 0) > 0 || (selection.exclude?.length ?? 0) > 0;
+    const all = readAllPlaylists(xmlPath);
+    warnUnmatchedPatterns(selection, all);
+
+    const rows = all.map((pl) => ({
+      fullPath: playlistFullPath(pl),
+      tracks: pl.trackIds.length,
+      selected: isPlaylistSelected(pl, selection),
+    }));
+    const selectedCount = rows.filter((r) => r.selected).length;
+    const visible = rawOpts.selectedOnly ? rows.filter((r) => r.selected) : rows;
+    const width = Math.max(0, ...visible.map((r) => r.fullPath.length));
+
+    console.log("");
+    console.log(chalk.bold(xmlPath));
+    console.log(
+      filtering
+        ? `${all.length} playlists, ${chalk.green(selectedCount)} selected`
+        : `${all.length} playlists (no filters configured — all would sync)`
+    );
+    console.log("");
+    for (const r of visible) {
+      const line = `${r.fullPath.padEnd(width)}  ${String(r.tracks).padStart(5)}`;
+      if (!filtering) console.log(`  ${line}`);
+      else if (r.selected) console.log(`${chalk.green("+")} ${line}`);
+      else console.log(chalk.dim(`- ${line}`));
+    }
+    console.log("");
+    process.exit(0);
+  });
+
+program
   .command("init")
-  .description("Spotify OAuth 認証フロー（初回 / リフレッシュトークン再取得）")
+  .description("Run the Spotify OAuth flow (first-time setup / refresh token renewal)")
   .action(async () => {
     const clientId = process.env.SPOTIFY_CLIENT_ID;
     const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
     const redirectUri = process.env.SPOTIFY_REDIRECT_URI ?? "http://127.0.0.1:8888/callback";
 
     if (!clientId || !clientSecret) {
-      console.error(chalk.red(".env に SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET を設定してください"));
-      console.error("詳細: https://developer.spotify.com/dashboard で App を作成し、Redirect URI に http://127.0.0.1:8888/callback を登録");
+      console.error(chalk.red("Set SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET in .env"));
+      console.error("Create an app at https://developer.spotify.com/dashboard and register http://127.0.0.1:8888/callback as a Redirect URI");
       process.exit(1);
     }
 
@@ -208,20 +434,20 @@ program
           return;
         }
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-        res.end("<html><body><h1>認証成功</h1><p>このタブを閉じてターミナルに戻ってください。</p></body></html>");
+        res.end("<html><body><h1>Authorized</h1><p>You can close this tab and return to the terminal.</p></body></html>");
         resolve({ code, state: returnedState });
         setTimeout(() => server.close(), 1000);
       });
       server.listen(port, "127.0.0.1", () => {
-        console.log(chalk.green("OK"), `ローカル callback サーバを起動 (${redirectUri})`);
+        console.log(chalk.green("OK"), `Local callback server listening (${redirectUri})`);
         console.log("");
-        console.log("以下の URL をブラウザで開いて Spotify にログインしてください:");
+        console.log("Open this URL in your browser and log in to Spotify:");
         console.log(chalk.cyan(authUrl));
         console.log("");
       });
       setTimeout(() => {
         server.close();
-        reject(new Error("5 分以内に認証が完了しませんでした"));
+        reject(new Error("Authorization was not completed within 5 minutes"));
       }, 5 * 60 * 1000);
     });
 
@@ -229,78 +455,168 @@ program
       const { code } = await tokenPromise;
       const token = await exchangeCodeForToken({ code, redirectUri, clientId, clientSecret });
       saveToken(token);
-      console.log(chalk.green("OK"), "認証完了。.cache/spotify_token.json に保存しました");
-      console.log("これで `rekordbox2spotify sync` が使えます");
+      console.log(chalk.green("OK"), "Authorized. Token saved to .cache/spotify_token.json");
+      console.log("You can now run `rb2spot sync`");
       process.exit(0);
     } catch (e) {
-      console.error(chalk.red("認証フロー失敗:"), e instanceof Error ? e.message : e);
+      console.error(chalk.red("Authorization flow failed:"), e instanceof Error ? e.message : e);
       process.exit(1);
     }
   });
 
 program
   .command("sync")
-  .description("rekordbox プレイリストを Spotify に同期する")
-  .option("--xml <path>", "rekordbox XML のパス")
-  .option("--dry-run", "実際の書き込みをせずプランだけ表示", false)
-  .option("--out-dir <dir>", "ログ出力先", "./logs")
+  .description("Sync rekordbox playlists to Spotify")
+  .option("--xml <path>", "Path to rekordbox XML")
+  .option("--dry-run", "Show the plan without writing anything", false)
+  .option("--out-dir <dir>", "Log output directory (default: output.log_dir, else ./logs)")
+  .option("--include <pattern>", `Only sync matching playlists. ${PATTERN_HELP}`, collect, [])
+  .option("--exclude <pattern>", `Skip matching playlists. ${PATTERN_HELP}`, collect, [])
+  .option("--quiet", "Only print the final summary", false)
+  .option("--rate <n>", "Spotify requests per second (lower this if throttled)", Number)
+  .option("--no-cache", "Ignore the ID3 and Spotify search caches, re-reading everything")
+  .option("--full", "In a dry run, list every track change instead of the first few", false)
+  .option("--unfollow", "Unfollow prefixed playlists no longer selected (overrides config)")
+  .option("--no-unfollow", "Keep prefixed playlists that are no longer selected")
   .action(async (rawOpts) => {
     const cfg = loadConfig();
     const xmlPath = resolveXmlPath(rawOpts.xml, cfg);
     if (!xmlPath) {
-      console.error(chalk.red("XML パスを解決できませんでした。--xml か config.yaml で指定してください"));
+      console.error(chalk.red("Could not resolve an XML path. Pass --xml or set it in config.yaml"));
       process.exit(1);
     }
 
     const clientId = process.env.SPOTIFY_CLIENT_ID;
     const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
     if (!clientId || !clientSecret) {
-      console.error(chalk.red("SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET が .env にありません"));
+      console.error(chalk.red("SPOTIFY_CLIENT_ID / SPOTIFY_CLIENT_SECRET are missing from .env"));
       process.exit(1);
     }
 
+    const selection = resolveSelection(rawOpts, cfg);
+    const progress = rawOpts.quiet ? silentReporter : createReporter();
+
     try {
+      if (existsSync(xmlPath)) {
+        const all = readAllPlaylists(xmlPath);
+        warnUnmatchedPatterns(selection, all);
+        const selected = all.filter((pl) => isPlaylistSelected(pl, selection));
+        if (selected.length === 0) {
+          console.error(chalk.red(`No playlists selected out of ${all.length} in the XML.`));
+          console.error("  Check include_playlists / ignore_playlists, or run `rb2spot list-playlists`");
+          process.exit(1);
+        }
+        progress.ok(`${selected.length} of ${all.length} playlists selected`);
+      }
+
+      if (rawOpts.dryRun) {
+        progress.ok(chalk.cyan("Dry run — Spotify will be read, never written"));
+      }
+
       const summary = await runSync({
         xmlPath,
         clientId,
         clientSecret,
-        ignorePlaylists: cfg.rekordbox?.ignore_playlists ?? [],
+        ignorePlaylists: selection.exclude ?? [],
+        includePlaylists: selection.include ?? [],
         matching: {
           fuzzyThreshold: cfg.matching?.fuzzy_threshold ?? 0.85,
           durationToleranceMs: cfg.matching?.duration_tolerance_ms ?? 3000,
           preferOriginalMix: cfg.matching?.prefer_original_mix ?? true,
         },
         dryRun: rawOpts.dryRun,
-        outDir: rawOpts.outDir,
+        outDir: rawOpts.outDir ?? cfg.output?.log_dir ?? "./logs",
+        progress,
+        naming: {
+          prefix: cfg.spotify?.playlist_prefix ?? DEFAULT_NAMING.prefix,
+          separator: cfg.spotify?.folder_separator ?? DEFAULT_NAMING.separator,
+        },
+        makePublic: cfg.spotify?.visibility === "public",
+        // Absent flag leaves the decision to config; either flag overrides it.
+        unfollowRemoved: rawOpts.unfollow ?? cfg.spotify?.unfollow_removed ?? true,
+        searchCacheTtl: resolveSearchCacheTtl(cfg),
+        requestsPerSecond: rawOpts.rate ?? cfg.spotify?.requests_per_second ?? DEFAULT_REQUESTS_PER_SECOND,
+        cacheDir: rawOpts.cache === false ? null : cfg.output?.cache_dir ?? ".cache",
       });
 
-      console.log("");
-      console.log(chalk.bold("同期サマリ:"));
-      console.log(`  対象トラック数: ${summary.totalTracks}`);
-      console.log(`  マッチ成功: ${chalk.green(summary.matched)} / ${summary.totalTracks}`);
-      console.log(`  未マッチ: ${chalk.yellow(summary.unmatched)}`);
-      console.log(`  プレイリスト作成: ${chalk.green(summary.playlistsCreated)}`);
-      console.log(`  プレイリスト更新: ${summary.playlistsUpdated}`);
-      console.log(`  no-op: ${summary.playlistsNoop}`);
-      console.log(`  unfollow: ${chalk.yellow(summary.playlistsUnfollowed)}`);
-      console.log("");
       if (rawOpts.dryRun) {
-        console.log(chalk.cyan("(dry-run でした。実際の書き込みは行われていません)"));
+        printPlan(summary, rawOpts.full ? Infinity : 8);
+      }
+
+      console.log("");
+      console.log(chalk.bold("Sync summary:"));
+      console.log(`  Tracks considered: ${summary.totalTracks}`);
+      console.log(`  Matched: ${chalk.green(summary.matched)} / ${summary.totalTracks}`);
+      console.log(`  Unmatched: ${chalk.yellow(summary.unmatched)}`);
+      console.log(`  Playlists created: ${chalk.green(summary.playlistsCreated)}`);
+      console.log(`  Playlists updated: ${summary.playlistsUpdated}`);
+      console.log(`  No-op: ${summary.playlistsNoop}`);
+      console.log(`  Unfollowed: ${chalk.yellow(summary.playlistsUnfollowed)}`);
+      console.log("");
+      if (summary.playlistsUnfollowed > 0) {
+        console.log(
+          chalk.yellow("NOTE"),
+          `${summary.playlistsUnfollowed} previously synced "[RB] " playlist(s) are no longer selected and were unfollowed.`
+        );
+        console.log("     Widen include_playlists if that was not intended.");
+        console.log("");
+      }
+      if (rawOpts.dryRun) {
+        console.log(chalk.cyan("(dry run — nothing was actually written)"));
       }
       process.exit(0);
     } catch (e) {
-      console.error(chalk.red("sync が完遂しませんでした:"), e instanceof Error ? e.message : e);
+      if (e instanceof SpotifyRateLimitError) {
+        console.error("");
+        console.error(chalk.red("Sync stopped:"), e.message);
+        console.error("");
+        console.error("  Retrying inside a penalty window can extend it, so nothing further was sent.");
+        console.error(`  Come back after ${e.retryAt.toLocaleTimeString()} and re-run.`);
+        console.error("  Lookups completed so far are cached — the next run resumes from there");
+        console.error("  rather than spending quota on them again.");
+        console.error("");
+        console.error("  A wait this long usually means the app's whole quota is spent. Check whether");
+        console.error("  your app is still in development mode at https://developer.spotify.com/dashboard");
+        console.error("  (extended quota must be requested), and consider a lower --rate.");
+        if (e.responseBody) console.error(chalk.dim(`  Spotify said: ${e.responseBody}`));
+        console.error("");
+        process.exit(1);
+      }
+      if (e instanceof SpotifyApiError && (e.status === 403 || e.status === 401)) {
+        console.error("");
+        console.error(chalk.red(`Sync stopped: Spotify refused a write (${e.status}).`));
+        console.error(`  ${e.method} ${e.url}`);
+        console.error("");
+        console.error("  A 403 from Spotify does not necessarily mean your credentials are wrong.");
+        console.error("  Check in this order:");
+        console.error("");
+        console.error("  1. AN ENDPOINT THIS TOOL CALLS NO LONGER EXISTS. Spotify answers a");
+        console.error("     withdrawn path with a bare 403 and no explanation, which is");
+        console.error("     indistinguishable from a permissions failure. Check the request above");
+        console.error("     against the current API reference before suspecting your credentials:");
+        console.error("     https://developer.spotify.com/documentation/web-api");
+        console.error("  2. The app is in development mode and this Spotify account is not on its");
+        console.error("     allowlist. Dashboard → your app → Settings → User Management.");
+        console.error("  3. The token predates a scope change. Re-run `rb2spot init`.");
+        console.error("");
+        console.error("  Matching results are cached, so a retry reaches this point again without");
+        console.error("  re-spending your request quota. Note a playlist may already have been");
+        console.error("  created before the failing write — check for an empty [RB] playlist.");
+        console.error("");
+        process.exit(1);
+      }
+      console.error(chalk.red("sync did not complete:"), e instanceof Error ? e.message : e);
       process.exit(1);
     }
   });
 
 program
   .command("unmatched")
-  .description("直近の未マッチ Track CSV を表示")
-  .option("--log-dir <dir>", "ログディレクトリ", "./logs")
+  .description("Show the most recent unmatched-track CSV")
+  .option("--log-dir <dir>", "Log directory", "./logs")
   .action((opts) => {
     if (!existsSync(opts.logDir)) {
-      console.log("未マッチ CSV はまだありません。`rekordbox2spotify sync` を実行してください");
+      console.log("No unmatched CSV yet. Run `rb2spot sync` first.");
       process.exit(0);
     }
     const files = readdirSync(opts.logDir)
@@ -308,13 +624,13 @@ program
       .sort()
       .reverse();
     if (files.length === 0) {
-      console.log("未マッチ CSV はまだありません。`rekordbox2spotify sync` を実行してください");
+      console.log("No unmatched CSV yet. Run `rb2spot sync` first.");
       process.exit(0);
     }
     const latest = files[0];
     const path = `${opts.logDir}/${latest}`;
     const rows = readUnmatchedCsv(path);
-    console.log(`${path} (${rows.length} 件)`);
+    console.log(`${path} (${rows.length} rows)`);
     console.log("");
     console.log(chalk.bold("trackId | title | artist | album | strategy"));
     for (const r of rows) {
@@ -325,7 +641,7 @@ program
 
 program
   .command("init-workspace")
-  .description("カレントディレクトリに .env.example と config.example.yaml を作成")
+  .description("Create .env.example and config.example.yaml in the current directory")
   .action(() => {
     const targets = [
       { file: ".env.example", content: ENV_TEMPLATE },
@@ -334,20 +650,21 @@ program
 
     for (const t of targets) {
       if (existsSync(t.file)) {
-        console.log(chalk.yellow("SKIP"), `${t.file} は既に存在します`);
+        console.log(chalk.yellow("SKIP"), `${t.file} already exists`);
       } else {
         writeFileSync(t.file, t.content, "utf-8");
-        console.log(chalk.green("OK"), `${t.file} を作成しました`);
+        console.log(chalk.green("OK"), `Created ${t.file}`);
       }
     }
 
     console.log("");
-    console.log(chalk.bold("次のステップ:"));
+    console.log(chalk.bold("Next steps:"));
     console.log("  1. cp .env.example .env");
-    console.log("  2. .env を編集して Spotify Client ID/Secret を貼り付け");
-    console.log("  3. config.example.yaml を config.yaml にコピーして必要に応じて編集");
-    console.log("  4. rekordbox2spotify init");
-    console.log("  5. rekordbox2spotify sync --xml ~/Documents/rekordbox.xml --dry-run");
+    console.log("  2. Edit .env and paste in your Spotify Client ID / Secret");
+    console.log("  3. cp config.example.yaml config.yaml and adjust as needed");
+    console.log("  4. rb2spot init");
+    console.log("  5. rb2spot list-playlists --xml ~/Documents/rekordbox.xml");
+    console.log("  6. rb2spot sync --xml ~/Documents/rekordbox.xml --dry-run");
   });
 
 program.parse();
