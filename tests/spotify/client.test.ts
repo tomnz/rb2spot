@@ -51,7 +51,7 @@ describe("long rate-limit windows", () => {
       return makeMockResponse(429, { error: { status: 429, message: "API rate limit exceeded" } }, {
         "Retry-After": "13941", // the 232m21s seen in the wild
       });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const t0 = Date.now();
     const err = await spotifyRequest("https://api.spotify.com/v1/search", { method: "GET", token: "tok" })
@@ -76,7 +76,7 @@ describe("long rate-limit windows", () => {
       calls++;
       if (calls === 1) return makeMockResponse(429, {}, { "Retry-After": "0" });
       return makeMockResponse(200, { ok: true });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const result = await spotifyRequest<{ ok: boolean }>("https://api.spotify.com/v1/x", { method: "GET", token: "tok" });
     expect(result.ok).toBe(true);
@@ -93,7 +93,7 @@ describe("rate limiting", () => {
     globalThis.fetch = (async () => {
       at.push(Date.now());
       return makeMockResponse(200, {});
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     configureRateLimit(50); // 20ms apart — keeps the test quick
     const t0 = Date.now();
@@ -118,7 +118,7 @@ describe("rate limiting", () => {
       calls++;
       if (calls === 1) return makeMockResponse(429, {}, { "Retry-After": "0" });
       return makeMockResponse(200, {});
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     configureRateLimit(100); // 10ms base
     const base = currentRequestIntervalMs();
@@ -151,7 +151,7 @@ describe("rate limiting", () => {
 describe("spotifyRequest", () => {
   test("returns parsed body on 200", async () => {
     const original = globalThis.fetch;
-    globalThis.fetch = (async () => makeMockResponse(200, { foo: "bar" })) as typeof fetch;
+    globalThis.fetch = (async () => makeMockResponse(200, { foo: "bar" })) as unknown as typeof fetch;
 
     const result = await spotifyRequest<{ foo: string }>("https://api.spotify.com/v1/test", { method: "GET", token: "tok" });
     expect(result.foo).toBe("bar");
@@ -166,7 +166,7 @@ describe("spotifyRequest", () => {
       calls++;
       if (calls === 1) return makeMockResponse(429, {}, { "Retry-After": "0" });
       return makeMockResponse(200, { ok: true });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const result = await spotifyRequest<{ ok: boolean }>("https://api.spotify.com/v1/x", { method: "GET", token: "tok" });
     expect(result.ok).toBe(true);
@@ -177,7 +177,7 @@ describe("spotifyRequest", () => {
 
   test("throws after max 429 retries", async () => {
     const original = globalThis.fetch;
-    globalThis.fetch = (async () => makeMockResponse(429, {}, { "Retry-After": "0" })) as typeof fetch;
+    globalThis.fetch = (async () => makeMockResponse(429, {}, { "Retry-After": "0" })) as unknown as typeof fetch;
 
     await expect(
       spotifyRequest("https://api.spotify.com/v1/x", { method: "GET", token: "tok", maxRetries: 2 }),
@@ -192,7 +192,7 @@ describe("spotifyRequest", () => {
     globalThis.fetch = (async () => {
       calls++;
       return makeMockResponse(503, {});
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     await expect(
       spotifyRequest("https://api.spotify.com/v1/x", { method: "GET", token: "tok", retryDelayMs: 0 }),
@@ -209,7 +209,7 @@ describe("spotifyRequest", () => {
       calls++;
       if (calls === 1) return makeMockResponse(429, {}, { "Retry-After": "1" });
       return makeMockResponse(200, { ok: true });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     // Record how many requests had happened when each event fired: the event has
     // to arrive *before* the wait, otherwise it cannot explain the pause.
@@ -227,7 +227,7 @@ describe("spotifyRequest", () => {
 
   test("announces 5xx backoff", async () => {
     const original = globalThis.fetch;
-    globalThis.fetch = (async () => makeMockResponse(503, {})) as typeof fetch;
+    globalThis.fetch = (async () => makeMockResponse(503, {})) as unknown as typeof fetch;
 
     const events: SpotifyRequestEvent[] = [];
     const unobserve = observeSpotifyRequests((e) => events.push(e));
@@ -248,7 +248,7 @@ describe("spotifyRequest", () => {
     globalThis.fetch = (async () => {
       calls++;
       throw new Error("The operation timed out.");
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const events: SpotifyRequestEvent[] = [];
     const unobserve = observeSpotifyRequests((e) => events.push(e));
@@ -269,7 +269,7 @@ describe("spotifyRequest", () => {
     globalThis.fetch = (async () => {
       calls++;
       throw new Error("socket hang up");
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     await expect(
       spotifyRequest("https://api.spotify.com/v1/playlists/x/tracks", { method: "PUT", token: "tok", body: {} }),
@@ -295,7 +295,7 @@ describe("spotifyRequest", () => {
 
   test("preserves the status on a non-retryable error so callers can react to it", async () => {
     const original = globalThis.fetch;
-    globalThis.fetch = (async () => makeMockResponse(403, { error: { status: 403, message: "Forbidden" } })) as typeof fetch;
+    globalThis.fetch = (async () => makeMockResponse(403, { error: { status: 403, message: "Forbidden" } })) as unknown as typeof fetch;
 
     const err = await spotifyRequest("https://api.spotify.com/v1/users/me/playlists", { method: "POST", token: "tok", body: {} })
       .then(() => null)
@@ -316,7 +316,7 @@ describe("spotifyRequest", () => {
     globalThis.fetch = (async () => {
       calls++;
       return makeMockResponse(404, { error: "not found" });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     await expect(
       spotifyRequest("https://api.spotify.com/v1/x", { method: "GET", token: "tok" }),

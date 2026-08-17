@@ -93,7 +93,7 @@ describe("createPlaylist", () => {
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       seen.push(String(input));
       return new Response(JSON.stringify({ id: "X" }), { status: 201, headers: { "content-type": "application/json" } });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     await createPlaylist("tok", "[RB] Test", { public: false });
     expect(seen).toEqual(["https://api.spotify.com/v1/me/playlists"]);
@@ -115,7 +115,7 @@ describe("getAllPlaylistTrackUris", () => {
         status: 200,
         headers: { "content-type": "application/json" },
       });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     await getAllPlaylistTrackUris("tok", "PL");
     expect(decodeURIComponent(requested)).toContain("items(item(uri))");
@@ -154,7 +154,7 @@ describe("replacePlaylistTracks", () => {
       const url = typeof input === "string" ? input : input.toString();
       calls.push(`${method} ${url}`);
       return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const uris = Array.from({ length: 50 }, (_, i) => `spotify:track:T${i}`);
     await replacePlaylistTracks("tok", "PL", uris);
@@ -171,7 +171,7 @@ describe("replacePlaylistTracks", () => {
       const url = typeof input === "string" ? input : input.toString();
       calls.push(`${method} ${url}`);
       return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const uris = Array.from({ length: 250 }, (_, i) => `spotify:track:T${i}`);
     await replacePlaylistTracks("tok", "PL", uris);
@@ -192,7 +192,7 @@ describe("replacePlaylistTracks", () => {
       const url = typeof input === "string" ? input : input.toString();
       calls.push(`${method} ${url}`);
       return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     await replacePlaylistTracks("tok", "PL", []);
     expect(calls).toEqual(["PUT https://api.spotify.com/v1/playlists/PL/items"]);
@@ -210,7 +210,7 @@ describe("unfollowPlaylist", () => {
       expect(init?.method).toBe("DELETE");
       expect(String(input)).toBe("https://api.spotify.com/v1/playlists/PL/followers");
       return new Response("", { status: 200 });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     await unfollowPlaylist("tok", "PL");
     expect(called).toBe(true);
