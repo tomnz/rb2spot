@@ -34,13 +34,13 @@ export async function listMyRBPlaylists(
   return result;
 }
 
+/** Playlists are created against the current user, at `/me/playlists`. */
 export async function createPlaylist(
   token: string,
-  myUserId: string,
   name: string,
   opts: { public: boolean; description?: string },
 ): Promise<string> {
-  const url = `${SPOTIFY_BASE}/users/${myUserId}/playlists`;
+  const url = `${SPOTIFY_BASE}/me/playlists`;
   const data = await spotifyRequest<{ id: string }>(url, {
     method: "POST",
     token,
@@ -65,6 +65,12 @@ export async function updatePlaylistDetails(
   });
 }
 
+/**
+ * Playlist contents live at `/items`, where each entry nests the track under
+ * `item`. Note that Spotify answers a withdrawn path with a bare 403 Forbidden
+ * — no `www-authenticate`, no message — which is indistinguishable from a
+ * permissions failure, so treat an unexplained 403 as a possible API change.
+ */
 export async function getAllPlaylistTrackUris(
   token: string,
   playlistId: string,
@@ -72,10 +78,13 @@ export async function getAllPlaylistTrackUris(
   const result: string[] = [];
   let offset = 0;
   while (true) {
-    const url = `${SPOTIFY_BASE}/playlists/${playlistId}/tracks?fields=${encodeURIComponent("items(track(uri)),next")}&limit=100&offset=${offset}`;
-    const page = await spotifyRequest<{ items: { track: { uri: string } | null }[]; next: string | null }>(url, { method: "GET", token });
-    for (const item of page.items) {
-      if (item.track?.uri) result.push(item.track.uri);
+    // The field selector must name `item`; asking for a field the payload does
+    // not have still returns 200, with empty objects — which would read as
+    // "every playlist is empty" rather than as an error.
+    const url = `${SPOTIFY_BASE}/playlists/${playlistId}/items?fields=${encodeURIComponent("items(item(uri)),next")}&limit=100&offset=${offset}`;
+    const page = await spotifyRequest<{ items: { item: { uri: string } | null }[]; next: string | null }>(url, { method: "GET", token });
+    for (const entry of page.items) {
+      if (entry.item?.uri) result.push(entry.item.uri);
     }
     if (!page.next) break;
     offset += 100;
@@ -89,7 +98,7 @@ export async function replacePlaylistTracks(
   uris: string[],
 ): Promise<void> {
   const first = uris.slice(0, BATCH_SIZE);
-  await spotifyRequest(`${SPOTIFY_BASE}/playlists/${playlistId}/tracks`, {
+  await spotifyRequest(`${SPOTIFY_BASE}/playlists/${playlistId}/items`, {
     method: "PUT",
     token,
     body: { uris: first },
@@ -97,7 +106,7 @@ export async function replacePlaylistTracks(
 
   for (let i = BATCH_SIZE; i < uris.length; i += BATCH_SIZE) {
     const batch = uris.slice(i, i + BATCH_SIZE);
-    await spotifyRequest(`${SPOTIFY_BASE}/playlists/${playlistId}/tracks`, {
+    await spotifyRequest(`${SPOTIFY_BASE}/playlists/${playlistId}/items`, {
       method: "POST",
       token,
       body: { uris: batch },

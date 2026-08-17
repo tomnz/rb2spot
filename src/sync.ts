@@ -133,7 +133,7 @@ export async function syncPlaylistsToSpotify(args: SyncPlaylistsArgs): Promise<S
     } else {
       summary.playlistsCreated++;
       if (!args.dryRun) {
-        const newId = await createPlaylist(args.token, args.myUserId, spotifyName, { public: false, description });
+        const newId = await createPlaylist(args.token, spotifyName, { public: false, description });
         if (desiredUris.length > 0) {
           await replacePlaylistTracks(args.token, newId, desiredUris);
         }
