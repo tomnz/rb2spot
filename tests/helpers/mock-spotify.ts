@@ -14,7 +14,7 @@ export function mockFetch(responses: MockResponses): () => void {
       });
     }
     throw new Error(`Unexpected request: ${key}`);
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   return () => {
     globalThis.fetch = original;
   };
