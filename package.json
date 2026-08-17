@@ -1,12 +1,12 @@
 {
-  "name": "rekordbox2spotify",
-  "version": "0.1.2",
-  "description": "Sync rekordbox playlists to Spotify with multi-stage matching (ID3 ISRC + normalized title/artist + fuzzy)",
+  "name": "rb2spot",
+  "version": "0.1.0",
+  "description": "Sync rekordbox playlists to Spotify — multi-stage matching, resumable caching, and progress reporting",
   "license": "MIT",
-  "author": "Chiaki Uehira",
+  "author": "tomnz",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ChiakiUehira/rekordbox2spotify.git"
+    "url": "https://github.com/tomnz/rb2spot.git"
   },
   "keywords": [
     "rekordbox",
@@ -28,9 +28,11 @@
     "README.md",
     "README.ja.md"
   ],
-  "bin": "./bin/rekordbox2spotify.mjs",
+  "bin": {
+    "rb2spot": "./bin/rb2spot.mjs"
+  },
   "scripts": {
-    "rekordbox2spotify": "bun run src/cli.ts",
+    "rb2spot": "bun run src/cli.ts",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit"
   },
@@ -48,5 +50,12 @@
   "devDependencies": {
     "@types/bun": "latest",
     "typescript": "^5.4.0"
-  }
+  },
+  "contributors": [
+    "Chiaki Uehira (original author of rekordbox2spotify)"
+  ],
+  "bugs": {
+    "url": "https://github.com/tomnz/rb2spot/issues"
+  },
+  "homepage": "https://github.com/tomnz/rb2spot#readme"
 }
