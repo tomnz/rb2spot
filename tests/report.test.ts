@@ -28,18 +28,18 @@ const SAMPLE_REPORT: VerifyReport = {
 describe("buildConclusion", () => {
   test("recommends XML adoption when XML is ok", () => {
     const c = buildConclusion(SAMPLE_REPORT);
-    expect(c).toContain("XML をデフォルトデータソースとして採用");
+    expect(c).toContain("Use the XML as the default data source");
   });
 
   test("flags low ISRC coverage when ratio < 0.5", () => {
     const c = buildConclusion(SAMPLE_REPORT);
-    expect(c).toContain("ISRC");
-    expect(c).toMatch(/正規化|Artist|Title/);
+    expect(c).toContain("ISRC coverage");
+    expect(c).toMatch(/normalized|Artist|Title/);
   });
 
   test("flags intelligent playlists with zero tracks", () => {
     const c = buildConclusion(SAMPLE_REPORT);
-    expect(c).toContain("インテリジェント");
+    expect(c).toContain("intelligent playlist");
   });
 
   test("notes SQLCipher when db status is encrypted", () => {
@@ -60,7 +60,7 @@ describe("renderJson", () => {
 describe("renderMarkdown", () => {
   test("contains XML and DB sections and conclusion", () => {
     const md = renderMarkdown({ ...SAMPLE_REPORT, conclusion: "TEST CONCLUSION" });
-    expect(md).toContain("## 結論");
+    expect(md).toContain("## Conclusion");
     expect(md).toContain("TEST CONCLUSION");
     expect(md).toContain("## XML");
     expect(md).toContain("## DB");

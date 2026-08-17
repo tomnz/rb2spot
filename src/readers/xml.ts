@@ -1,10 +1,32 @@
 import { existsSync, readFileSync } from "node:fs";
 import { XMLParser } from "fast-xml-parser";
 import type { Track, Playlist, XmlVerifyResult } from "../types.ts";
+import { selectPlaylists, type PlaylistSelection } from "../playlist-filter.ts";
 
 export type ReadXmlOptions = {
+  /** Patterns to exclude. Kept under the legacy `ignore` name for config compatibility. */
   ignorePlaylists?: string[];
+  /** If non-empty, only playlists matching one of these patterns are read. */
+  includePlaylists?: string[];
 };
+
+/** Shared parser config — the sync path parses the same XML for track locations. */
+export function createXmlParser(): XMLParser {
+  return new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: "@_",
+    isArray: (name) => name === "TRACK" || name === "NODE",
+    // A real library holds far more than the default 1000 predefined entities
+    // (every "&" in an artist name is one), so the count and length caps are
+    // lifted. maxExpansionDepth / maxEntitySize still guard against entity
+    // bombs, and rekordbox exports declare no custom DTD entities anyway.
+    processEntities: {
+      enabled: true,
+      maxTotalExpansions: Infinity,
+      maxExpandedLength: Infinity,
+    },
+  });
+}
 
 const EMPTY_COVERAGE: XmlVerifyResult["metadataCoverage"] = {
   id: 0, title: 0, artist: 0, album: 0, durationMs: 0,
@@ -32,12 +54,7 @@ export async function readRekordboxXml(
   let parsed: any;
   try {
     const xml = readFileSync(path, "utf-8");
-    const parser = new XMLParser({
-      ignoreAttributes: false,
-      attributeNamePrefix: "@_",
-      isArray: (name) => name === "TRACK" || name === "NODE",
-    });
-    parsed = parser.parse(xml);
+    parsed = createXmlParser().parse(xml);
   } catch (e) {
     return PARSE_ERROR(path, e instanceof Error ? e.message : String(e));
   }
@@ -47,7 +64,10 @@ export async function readRekordboxXml(
   }
 
   const tracks = extractTracks(parsed);
-  const playlists = extractPlaylists(parsed, options.ignorePlaylists ?? []);
+  const playlists = extractPlaylists(parsed, {
+    include: options.includePlaylists,
+    exclude: options.ignorePlaylists,
+  });
   const intelligentPlaylists = playlists.filter(p => p.isIntelligent);
   const folderDepthMax = Math.max(0, ...playlists.map(p => p.path.length));
   const sampleStructure = playlists
@@ -94,21 +114,25 @@ function extractTracks(parsed: any): Track[] {
   }));
 }
 
-function extractPlaylists(parsed: any, ignoreList: string[]): Playlist[] {
+/**
+ * Walk the <PLAYLISTS> tree of an already-parsed rekordbox XML document.
+ *
+ * The whole tree is collected first and filtered afterwards, so include/exclude
+ * patterns can be matched against complete folder paths.
+ */
+export function extractPlaylists(parsed: any, selection: PlaylistSelection = {}): Playlist[] {
   const root = parsed?.DJ_PLAYLISTS?.PLAYLISTS?.NODE;
   const rootNode = Array.isArray(root) ? root[0] : root;
   if (!rootNode) return [];
   const results: Playlist[] = [];
-  const ignoreSet = new Set(ignoreList);
-  walkNode(rootNode, [], results, ignoreSet);
-  return results;
+  walkNode(rootNode, [], results);
+  return selectPlaylists(results, selection);
 }
 
-function walkNode(node: any, parentPath: string[], out: Playlist[], ignoreSet: Set<string>): void {
+function walkNode(node: any, parentPath: string[], out: Playlist[]): void {
   const type = String(node?.["@_Type"] ?? "");
   const name = String(node?.["@_Name"] ?? "");
   if (type === "1") {
-    if (ignoreSet.has(name)) return;
     const trackChildren = Array.isArray(node?.TRACK) ? node.TRACK : node?.TRACK ? [node.TRACK] : [];
     const trackIds = trackChildren.map((t: any) => String(t["@_Key"]));
     out.push({
@@ -120,7 +144,7 @@ function walkNode(node: any, parentPath: string[], out: Playlist[], ignoreSet: S
   if (type === "0") {
     const childPath = name === "ROOT" ? parentPath : [...parentPath, name];
     const children = Array.isArray(node?.NODE) ? node.NODE : node?.NODE ? [node.NODE] : [];
-    for (const child of children) walkNode(child, childPath, out, ignoreSet);
+    for (const child of children) walkNode(child, childPath, out);
   }
 }
 

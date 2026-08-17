@@ -80,6 +80,33 @@ describe("readRekordboxXml — error handling", () => {
   });
 });
 
+describe("readRekordboxXml — include_playlists option", () => {
+  test("keeps only playlists matching an include pattern", async () => {
+    const result = await readRekordboxXml(FIXTURE, { includePlaylists: ["Genre"] });
+    expect(result.playlistCount.total).toBe(1);
+    expect(result.folderDepth.sampleStructure).toEqual(["Genre > House"]);
+  });
+
+  test("include patterns match the leaf name too", async () => {
+    const result = await readRekordboxXml(FIXTURE, { includePlaylists: ["Techno Set"] });
+    expect(result.playlistCount.total).toBe(1);
+  });
+
+  test("ignorePlaylists is applied after includePlaylists", async () => {
+    const result = await readRekordboxXml(FIXTURE, {
+      includePlaylists: ["*"],
+      ignorePlaylists: ["Smart Filter"],
+    });
+    expect(result.playlistCount.total).toBe(2);
+    expect(result.playlistCount.intelligent).toBe(0);
+  });
+
+  test("no-op when includePlaylists is empty", async () => {
+    const result = await readRekordboxXml(FIXTURE, { includePlaylists: [] });
+    expect(result.playlistCount.total).toBe(3);
+  });
+});
+
 describe("readRekordboxXml — ignore_playlists option", () => {
   test("excludes named playlists from all counts and samples", async () => {
     const result = await readRekordboxXml(FIXTURE, {

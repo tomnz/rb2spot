@@ -69,9 +69,10 @@ describe("listMyRBPlaylists", () => {
 });
 
 describe("createPlaylist", () => {
-  test("posts to /users/{id}/playlists and returns id", async () => {
+  // Creation is user-scoped via /me, not /users/{id}.
+  test("posts to /me/playlists and returns id", async () => {
     const restore = mockFetch({
-      "POST https://api.spotify.com/v1/users/me/playlists": {
+      "POST https://api.spotify.com/v1/me/playlists": {
         id: "NEW_PL_ID",
         name: "[RB] Test",
         owner: { id: "me" },
@@ -80,22 +81,59 @@ describe("createPlaylist", () => {
       },
     });
 
-    const id = await createPlaylist("tok", "me", "[RB] Test", { public: false });
+    const id = await createPlaylist("tok", "[RB] Test", { public: false });
     expect(id).toBe("NEW_PL_ID");
 
     restore();
   });
+
+  test("never calls the user-scoped creation endpoint", async () => {
+    const seen: string[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seen.push(String(input));
+      return new Response(JSON.stringify({ id: "X" }), { status: 201, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    await createPlaylist("tok", "[RB] Test", { public: false });
+    expect(seen).toEqual(["https://api.spotify.com/v1/me/playlists"]);
+    expect(seen.some((u) => u.includes("/users/"))).toBe(false);
+
+    globalThis.fetch = original;
+  });
 });
 
 describe("getAllPlaylistTrackUris", () => {
+  test("asks for the field names the payload actually uses", async () => {
+    // A selector naming a field the payload lacks still returns 200, with every
+    // object empty — which looks like "the playlist has no tracks", not an error.
+    let requested = "";
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      requested = String(input);
+      return new Response(JSON.stringify({ items: [], next: null }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    await getAllPlaylistTrackUris("tok", "PL");
+    expect(decodeURIComponent(requested)).toContain("items(item(uri))");
+    expect(decodeURIComponent(requested)).not.toContain("items(track(uri))");
+    expect(requested).toContain("/items?");
+    expect(requested).not.toContain("/tracks?");
+
+    globalThis.fetch = original;
+  });
+
   test("paginates and returns all URIs in order", async () => {
     const restore = mockFetch({
-      "GET https://api.spotify.com/v1/playlists/PL/tracks?fields=items(track(uri))%2Cnext&limit=100&offset=0": {
-        items: [{ track: { uri: "spotify:track:A" } }, { track: { uri: "spotify:track:B" } }],
-        next: "https://api.spotify.com/v1/playlists/PL/tracks?fields=items(track(uri))%2Cnext&limit=100&offset=100",
+      "GET https://api.spotify.com/v1/playlists/PL/items?fields=items(item(uri))%2Cnext&limit=100&offset=0": {
+        items: [{ item: { uri: "spotify:track:A" } }, { item: { uri: "spotify:track:B" } }],
+        next: "https://api.spotify.com/v1/playlists/PL/items?fields=items(item(uri))%2Cnext&limit=100&offset=100",
       },
-      "GET https://api.spotify.com/v1/playlists/PL/tracks?fields=items(track(uri))%2Cnext&limit=100&offset=100": {
-        items: [{ track: { uri: "spotify:track:C" } }],
+      "GET https://api.spotify.com/v1/playlists/PL/items?fields=items(item(uri))%2Cnext&limit=100&offset=100": {
+        items: [{ item: { uri: "spotify:track:C" } }],
         next: null,
       },
     });
@@ -120,7 +158,7 @@ describe("replacePlaylistTracks", () => {
 
     const uris = Array.from({ length: 50 }, (_, i) => `spotify:track:T${i}`);
     await replacePlaylistTracks("tok", "PL", uris);
-    expect(calls).toEqual(["PUT https://api.spotify.com/v1/playlists/PL/tracks"]);
+    expect(calls).toEqual(["PUT https://api.spotify.com/v1/playlists/PL/items"]);
 
     globalThis.fetch = original;
   });
@@ -138,9 +176,9 @@ describe("replacePlaylistTracks", () => {
     const uris = Array.from({ length: 250 }, (_, i) => `spotify:track:T${i}`);
     await replacePlaylistTracks("tok", "PL", uris);
     expect(calls).toEqual([
-      "PUT https://api.spotify.com/v1/playlists/PL/tracks",
-      "POST https://api.spotify.com/v1/playlists/PL/tracks",
-      "POST https://api.spotify.com/v1/playlists/PL/tracks",
+      "PUT https://api.spotify.com/v1/playlists/PL/items",
+      "POST https://api.spotify.com/v1/playlists/PL/items",
+      "POST https://api.spotify.com/v1/playlists/PL/items",
     ]);
 
     globalThis.fetch = original;
@@ -157,7 +195,7 @@ describe("replacePlaylistTracks", () => {
     }) as typeof fetch;
 
     await replacePlaylistTracks("tok", "PL", []);
-    expect(calls).toEqual(["PUT https://api.spotify.com/v1/playlists/PL/tracks"]);
+    expect(calls).toEqual(["PUT https://api.spotify.com/v1/playlists/PL/items"]);
 
     globalThis.fetch = original;
   });

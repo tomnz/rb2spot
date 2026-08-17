@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<DJ_PLAYLISTS Version="1.0.0">
+  <PRODUCT Name="rekordbox" Version="7.2.16" Company="AlphaTheta"/>
+  <COLLECTION Entries="5">
+    <TRACK TrackID="1" Name="Test Track One" Artist="Artist A" Album="Album X"
+           TotalTime="320" AverageBpm="128.00" Tonality="Am" Genre="Techno" ISRC="USRC17607839"/>
+    <TRACK TrackID="2" Name="Test Track Two" Artist="Artist B" Album="Album Y"
+           TotalTime="245" AverageBpm="124.50" Tonality="Cm" Genre="House" ISRC="USRC17607840"/>
+    <TRACK TrackID="3" Name="Test Track Three" Artist="Artist C" Album="Album Z"
+           TotalTime="280" AverageBpm="130.00" Tonality="Fm" Genre="Techno"/>
+    <TRACK TrackID="4" Name="Test Track Four" Artist="Artist D"
+           TotalTime="200" AverageBpm="125.00" Tonality="Gm" Genre="House"/>
+    <TRACK TrackID="5" Name="Test Track Five" Artist="Artist E" Album="Album W"
+           TotalTime="360" AverageBpm="140.00" Tonality="Em" Genre="Techno"/>
+  </COLLECTION>
+  <PLAYLISTS>
+    <NODE Type="0" Name="ROOT" Count="5">
+      <NODE Name="Newish" Type="1" KeyType="0" Entries="1">
+        <TRACK Key="1"/>
+      </NODE>
+      <NODE Name="Vibe" Type="0" Count="2">
+        <NODE Name="Chill Bass" Type="1" KeyType="0" Entries="1">
+          <TRACK Key="2"/>
+        </NODE>
+        <NODE Name="House Bangers" Type="1" KeyType="0" Entries="1">
+          <TRACK Key="3"/>
+        </NODE>
+      </NODE>
+      <NODE Name="Sets" Type="0" Count="1">
+        <NODE Name="House 2024" Type="1" KeyType="0" Entries="1">
+          <TRACK Key="4"/>
+        </NODE>
+      </NODE>
+      <NODE Name="Archive Sets" Type="0" Count="2">
+        <NODE Name="Booch" Type="1" KeyType="0" Entries="1">
+          <TRACK Key="5"/>
+        </NODE>
+        <NODE Name="2013" Type="0" Count="2">
+          <NODE Name="2013 All" Type="1" KeyType="0" Entries="1">
+            <TRACK Key="1"/>
+          </NODE>
+          <NODE Name="2013 Heavy" Type="1" KeyType="0" Entries="1">
+            <TRACK Key="2"/>
+          </NODE>
+        </NODE>
+      </NODE>
+      <NODE Name="Playa Tech" Type="0" Count="1">
+        <NODE Name="Playa Tech" Type="1" KeyType="0" Entries="1">
+          <TRACK Key="3"/>
+        </NODE>
+      </NODE>
+    </NODE>
+  </PLAYLISTS>
+</DJ_PLAYLISTS>

@@ -5,36 +5,36 @@ export function buildConclusion(report: VerifyReport): string {
   const { xml, db } = report;
 
   if (xml?.status === "ok") {
-    lines.push("XML をデフォルトデータソースとして採用してください。");
+    lines.push("Use the XML as the default data source.");
   } else if (xml?.status === "parse_error") {
-    lines.push(`XML のパースに失敗しました: ${xml.error ?? "不明なエラー"}`);
+    lines.push(`Failed to parse the XML: ${xml.error ?? "unknown error"}`);
   } else if (xml?.status === "not_found") {
-    lines.push("XML ファイルが見つかりません。--xml で正しいパスを指定してください。");
+    lines.push("XML file not found. Pass the correct path with --xml.");
   }
 
   if (xml?.status === "ok") {
     const lowIsrc = xml.isrcCoverage.ratio < 0.5;
     if (lowIsrc) {
       lines.push(
-        `ISRC カバレッジが ${(xml.isrcCoverage.ratio * 100).toFixed(1)}% と低いため、` +
-          "M1 では正規化 Artist+Title マッチを主体にしてください（ISRC 戦略は実質発動しません）。"
+        `ISRC coverage is only ${(xml.isrcCoverage.ratio * 100).toFixed(1)}%, so matching will ` +
+          "rely mainly on normalized Artist+Title (the ISRC strategy will rarely fire)."
       );
     }
     const zeroTrackIntelligent = xml.intelligentSample.filter(p => p.trackIdCount === 0).length;
     if (xml.playlistCount.intelligent > 0) {
       lines.push(
-        `インテリジェント PL 疑い ${xml.playlistCount.intelligent} 件 ` +
-          `(うち ${zeroTrackIntelligent} 件はメンバー曲ゼロ)。M1 で同期したい場合は別途検討が必要です。`
+        `${xml.playlistCount.intelligent} suspected intelligent playlist(s) ` +
+          `(${zeroTrackIntelligent} with no member tracks). Syncing these needs separate handling.`
       );
     }
   }
 
   if (db?.status === "encrypted") {
-    lines.push("DB は SQLCipher により本ツール v0 では読み取り不可です（XML 採用が現実的）。");
+    lines.push("The DB is SQLCipher-encrypted and unreadable by this tool (XML is the practical choice).");
   } else if (db?.status === "not_found") {
-    lines.push("DB ファイルが見つかりません。M0 ではこれは想定内です。");
+    lines.push("DB file not found. That is expected when working from an XML export.");
   } else if (db?.status === "ok") {
-    lines.push(`DB は読み取れました（${db.tableNames?.length ?? 0} テーブル検出）。`);
+    lines.push(`The DB was readable (${db.tableNames?.length ?? 0} tables detected).`);
   }
 
   return lines.join("\n");
@@ -50,7 +50,7 @@ export function renderMarkdown(report: VerifyReport): string {
   lines.push("");
   lines.push(`Generated: ${report.generatedAt}`);
   lines.push("");
-  lines.push("## 結論");
+  lines.push("## Conclusion");
   lines.push("");
   lines.push(report.conclusion);
   lines.push("");
@@ -59,24 +59,24 @@ export function renderMarkdown(report: VerifyReport): string {
   if (xml) {
     lines.push("## XML");
     lines.push("");
-    lines.push(`- パス: \`${xml.path}\``);
-    lines.push(`- 状態: ${xml.status}${xml.error ? ` (${xml.error})` : ""}`);
+    lines.push(`- Path: \`${xml.path}\``);
+    lines.push(`- Status: ${xml.status}${xml.error ? ` (${xml.error})` : ""}`);
     if (xml.status === "ok") {
-      lines.push(`- 楽曲数: ${xml.trackCount}`);
+      lines.push(`- Tracks: ${xml.trackCount}`);
       lines.push(
-        `- プレイリスト総数: ${xml.playlistCount.total} ` +
-          `(通常 ${xml.playlistCount.normal} / インテリジェント疑い ${xml.playlistCount.intelligent})`
+        `- Playlists: ${xml.playlistCount.total} ` +
+          `(normal ${xml.playlistCount.normal} / suspected intelligent ${xml.playlistCount.intelligent})`
       );
-      lines.push(`- フォルダ階層深さ: 最大 ${xml.folderDepth.max}`);
+      lines.push(`- Max folder depth: ${xml.folderDepth.max}`);
       if (xml.folderDepth.sampleStructure.length > 0) {
-        lines.push(`- フォルダ構造例: ${xml.folderDepth.sampleStructure.slice(0, 3).join(", ")}`);
+        lines.push(`- Example folder structure: ${xml.folderDepth.sampleStructure.slice(0, 3).join(", ")}`);
       }
       lines.push(
-        `- ISRC 保有率: ${xml.isrcCoverage.withIsrc} / ${xml.isrcCoverage.total} ` +
+        `- ISRC coverage: ${xml.isrcCoverage.withIsrc} / ${xml.isrcCoverage.total} ` +
           `(${(xml.isrcCoverage.ratio * 100).toFixed(1)}%)`
       );
       lines.push("");
-      lines.push("### メタデータカバレッジ");
+      lines.push("### Metadata coverage");
       lines.push("");
       lines.push("| field | coverage |");
       lines.push("|---|---|");
@@ -85,13 +85,13 @@ export function renderMarkdown(report: VerifyReport): string {
       }
       if (xml.intelligentSample.length > 0) {
         lines.push("");
-        lines.push("### インテリジェント PL サンプル");
+        lines.push("### Intelligent playlist samples");
         lines.push("");
         lines.push("| name | path | trackIds |");
         lines.push("|---|---|---|");
         for (const p of xml.intelligentSample) {
           const pathStr = p.path.length === 0 ? "/" : p.path.join(" > ");
-          const status = p.trackIdCount === 0 ? "0 (未展開)" : `${p.trackIdCount} (展開済み)`;
+          const status = p.trackIdCount === 0 ? "0 (not expanded)" : `${p.trackIdCount} (expanded)`;
           lines.push(`| ${p.name} | ${pathStr} | ${status} |`);
         }
       }
@@ -103,15 +103,15 @@ export function renderMarkdown(report: VerifyReport): string {
   if (db) {
     lines.push("## DB");
     lines.push("");
-    lines.push(`- パス: \`${db.path}\``);
-    lines.push(`- 状態: ${db.status}${db.error ? ` (${db.error})` : ""}`);
+    lines.push(`- Path: \`${db.path}\``);
+    lines.push(`- Status: ${db.status}${db.error ? ` (${db.error})` : ""}`);
     if (db.status === "encrypted") {
       lines.push("");
-      lines.push("注記: rekordbox 6+ の master.db は SQLCipher で暗号化されており、bun:sqlite では開けません。");
-      lines.push("本ツール v0 では XML 採用を前提としています。");
+      lines.push("Note: the rekordbox 6+ master.db is SQLCipher-encrypted and cannot be opened with bun:sqlite.");
+      lines.push("This tool works from the XML export instead.");
     }
     if (db.tableNames && db.tableNames.length > 0) {
-      lines.push(`- 検出テーブル: ${db.tableNames.slice(0, 10).join(", ")}`);
+      lines.push(`- Tables detected: ${db.tableNames.slice(0, 10).join(", ")}`);
     }
     lines.push("");
   }

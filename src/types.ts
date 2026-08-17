@@ -72,7 +72,10 @@ export type SpotifyPlaylistSummary = {
   name: string;
   owner: { id: string };
   snapshot_id: string;
-  tracks: { total: number };
+  /** Track count, as the API reports it. */
+  items?: { total: number };
+  /** Alternate spelling of the same count, seen in some payloads. */
+  tracks?: { total: number };
 };
 
 // === M1: Matching ========================================================
@@ -101,6 +104,15 @@ export type SyncOptions = {
   outDir: string;
 };
 
+/** What a sync did, or would do, to one playlist. */
+export type PlaylistChange = {
+  name: string;
+  action: "create" | "update" | "noop" | "unfollow" | "orphan";
+  /** Track descriptions gained and lost, resolved to names where possible. */
+  added: string[];
+  removed: string[];
+};
+
 export type SyncSummary = {
   generatedAt: string;
   totalTracks: number;
@@ -111,4 +123,6 @@ export type SyncSummary = {
   playlistsUnfollowed: number;
   playlistsNoop: number;
   matchByStrategy: Record<MatchStrategy, number>;
+  /** Per-playlist detail, so a dry run can show a diff rather than counts. */
+  changes: PlaylistChange[];
 };
