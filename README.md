@@ -4,11 +4,35 @@
 
 > A CLI tool to sync your rekordbox playlists to Spotify
 
-> **A fork of [ChiakiUehira/rekordbox2spotify](https://github.com/ChiakiUehira/rekordbox2spotify)**, MIT licensed.
-> It keeps the original's matching pipeline and rekordbox-is-the-master model, and adds:
-> updated Spotify API endpoints, cross-platform track path resolution, persistent
-> caching of tag reads and Spotify searches, a rewritten candidate scorer,
-> progress reporting, and a much larger configuration surface.
+A fork of **[ChiakiUehira/rekordbox2spotify](https://github.com/ChiakiUehira/rekordbox2spotify)** (MIT), keeping the
+original's matching pipeline and rekordbox-is-the-master model. What's different:
+
+- **Current Spotify API endpoints** — playlists are created and their contents read
+  and written at the paths Spotify actually serves. The old ones return a bare `403`,
+  and the old field selector returns `200` with empty objects, so playlists silently
+  read as empty and get needlessly rewritten
+- **Track paths resolve on any platform** — Windows drive letters, WSL mount points and
+  macOS external drives, not just a macOS home directory. Previously a library stored
+  anywhere else read no tags at all, leaving ISRC matching permanently unavailable
+- **Rewritten matching** — title, version qualifier and artists are scored separately
+  instead of Levenshtein over one concatenated string, artists are compared as sets, a
+  remix is distinguished from its original, and the duration tiebreaker actually runs.
+  Measured on a 2000-track library: **1492 → 1803 matched**
+- **Nothing is looked up twice** — tag reads are cached on size and mtime, Spotify
+  searches on request URL. Both survive an interrupted run, so a sync resumes instead
+  of re-spending the API request quota
+- **Progress you can read** — a live bar per phase with counts, ETA and a stall
+  indicator, so a slow phase is distinguishable from a hung one. Degrades to plain
+  lines when piped
+- **Rate limits handled deliberately** — requests are paced and back off adaptively,
+  `Retry-After` is parsed in both its forms, and a multi-hour penalty window aborts with
+  the time to come back rather than sleeping through it
+- **Configurable** — playlist prefix, folder separator, visibility, cache lifetimes and
+  log locations are honoured rather than hardcoded, and `--no-unfollow` stops a partial
+  sync treating everything outside its selection as deleted
+- **A dry run shows a diff** — the tracks each playlist would gain and lose, not counts
+- **Playlist selection** — include/exclude by name, folder or glob
+- **CI, a clean typecheck, and a token file only its owner can read**
 
 Recreates and mirrors the playlists you manage in rekordbox on your Spotify account. Whenever you add, remove, or reorder tracks in rekordbox, the next `sync` propagates those changes to Spotify. Prep your sets in rekordbox, listen on your phone in Spotify — same playlists, same order.
 
